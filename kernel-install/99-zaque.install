@@ -1,0 +1,29 @@
+#!/bin/bash
+# 99-zaque.install — re-sella la línea base de zaque tras un cambio de kernel.
+#
+# kernel-install ejecuta los drop-ins de /etc/kernel/install.d/ en cada add/remove de
+# kernel (actualización de kernel, regeneración de initramfs, entrada BLS/grub). El 99
+# lo hace correr EL ÚLTIMO, cuando /boot ya quedó en su estado final.
+#
+# Por qué es seguro automatizar AQUÍ (y no con un watcher de /boot): kernel-install solo
+# lo invoca una transacción de paquetes autenticada corriendo como root. La manipulación
+# que zaque existe para cazar —offline (apagado) o sin root— NO puede llegar aquí. Un
+# root ya podía re-sellar a mano; esto no le da nada nuevo. (El tapón contra root es el
+# ancla a prueba de root: medio de solo-lectura / TPM, endurecimiento aparte.)
+
+COMMAND="${1:-}"
+
+case "$COMMAND" in
+    add | remove)
+        command -v zaque >/dev/null 2>&1 || exit 0   # sin zaque instalado: no estorbar
+        if zaque sellar; then
+            echo "zaque: línea base re-sellada tras cambio de kernel ($COMMAND)"
+        else
+            # No se rompe la instalación del kernel por un re-sellado fallido, pero se
+            # avisa ruidoso: si falla, la próxima verificación dará una deriva legítima.
+            echo "zaque: AVISO: el re-sellado falló; corre 'sudo zaque sellar' a mano" >&2
+        fi
+        ;;
+esac
+
+exit 0

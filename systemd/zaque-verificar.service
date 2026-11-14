@@ -1,0 +1,16 @@
+[Unit]
+Description=zaque — verificar integridad de la cadena de arranque
+Documentation=file:/mnt/data/zaque/README.md
+# Tras montar /boot y /boot/efi (la ESP): si no, verificaría un árbol incompleto.
+RequiresMountsFor=/boot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zaque verificar
+# exit 0 = ÍNTEGRO; exit 2 = DERIVA; exit 3 = error. Cualquier != 0 deja la unidad en
+# estado `failed` y la salida en el journal: "sano y quieto" se distingue de "saltó".
+# (No se marca `success` el 2/3 a propósito — la alarma debe ser visible.)
+
+[Install]
+WantedBy=multi-user.target

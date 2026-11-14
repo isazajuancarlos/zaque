@@ -1,0 +1,132 @@
+===============================================================================
+ zaque + ENDURECIMIENTO DEL HOST — runbook de reinstalación (hope / Fedora)
+ Juan Carlos Isaza · 2026-10-30
+===============================================================================
+
+QUÉ ES ESTO
+  Todo lo necesario para reponer, tras reinstalar Fedora, lo que la reinstalación
+  BORRA (firewall, sysctl, lockdown, Secure Boot, servicios): el detector de
+  integridad de arranque `zaque` y la capa de endurecimiento de kernel.
+  (Reinstalar el SO formatea el SSD / + /home; /mnt/data —nvme— sobrevive, así que
+  el repo /mnt/data/zaque y su espejo siguen ahí. Si no, clona del espejo:
+  git clone /mnt/data/espejos/zaque.git /mnt/data/zaque )
+
+  Referencia de fondo: conocimiento/uefi-edk2-pxe-cve-2026-97631.md §7
+                       memoria reinstalar-borra-endurecimiento-host
+
+  Convención: las líneas con `sudo` se corren como root; en la sesión de Claude,
+  prefíjalas con `!`.
+
+-------------------------------------------------------------------------------
+ 0. PRE-REQUISITOS (toolchain de build)
+-------------------------------------------------------------------------------
+  sudo dnf install -y rust cargo
+
+-------------------------------------------------------------------------------
+ 1. COMPILAR E INSTALAR zaque
+-------------------------------------------------------------------------------
+  cd /mnt/data/zaque
+  cargo test                                   # 11 unit + 3 E2E, deben pasar
+  cargo clippy --all-targets -- -D warnings    # la puerta, debe salir limpia
+  cargo build --release
+  sudo install -m 0755 target/release/zaque /usr/local/bin/zaque
+
+-------------------------------------------------------------------------------
+ 2. ENDURECIMIENTO DE KERNEL (runtime, no depende de Secure Boot)
+-------------------------------------------------------------------------------
+  # 2a. sysctl (efecto inmediato + persistente). Compatible con NordVPN/AdGuard.
+  sudo install -m 0644 /mnt/data/zaque/host-hardening/99-xiliux-hardening.conf \
+       /etc/sysctl.d/99-xiliux-hardening.conf
+  sudo sysctl --system
+
+  # 2b. lockdown + firma de módulos (requiere REINICIO para activarse).
+  #     Seguro solo si NO hay módulos de kernel fuera-de-árbol sin firmar.
+  #     Comprobar antes:  lsmod | while read m _; do modinfo -F intree "$m" 2>/dev/null | grep -q N && echo "FUERA-DE-ARBOL: $m"; done
+  sudo grubby --update-kernel=ALL --args="lockdown=integrity module.sig_enforce=1"
+  # (reinicia cuando quieras; verificar tras el reinicio en la sección 5)
+
+  # Reversión:
+  #   sudo rm /etc/sysctl.d/99-xiliux-hardening.conf && sudo sysctl --system
+  #   sudo grubby --update-kernel=ALL --remove-args="lockdown=integrity module.sig_enforce=1"  (+ reinicio)
+
+-------------------------------------------------------------------------------
+ 3. zaque EN PRODUCCIÓN (sellar + servicio al arranque)
+-------------------------------------------------------------------------------
+  # 3a. Sellar la línea base AHORA, con el arranque sano (crea /var/lib/zaque/linea-base.txt)
+  sudo zaque sellar
+  sudo zaque verificar                         # debe decir: INTEGRO
+
+  # 3b. Servicio oneshot que verifica en cada arranque
+  sudo cp /mnt/data/zaque/systemd/zaque-verificar.service /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now zaque-verificar.service
+
+-------------------------------------------------------------------------------
+ 4. RE-SELLADO AUTOMÁTICO (para no tener que re-sellar a mano tras updates)
+-------------------------------------------------------------------------------
+  # 4a. Drop-in de kernel-install (kernel / initramfs / grub)
+  sudo install -m 0755 /mnt/data/zaque/kernel-install/99-zaque.install \
+       /etc/kernel/install.d/99-zaque.install
+
+  # 4b. Acción de dnf (cualquier transacción: shim, grub2-efi, fwupd-efi, …)
+  sudo dnf install -y libdnf5-plugin-actions
+  sudo install -m 0644 /mnt/data/zaque/dnf/zaque.actions \
+       /etc/dnf/libdnf5-plugins/actions.d/zaque.actions
+
+  # Con 4a+4b el re-sellado es automático y seguro (solo lo dispara una transacción
+  # autenticada como root; la manipulación offline/sin-root no puede dispararlo).
+  # Manual, solo de emergencia:  sudo zaque sellar
+
+-------------------------------------------------------------------------------
+ 5. VERIFICACIÓN (positivos de control — D30)
+-------------------------------------------------------------------------------
+  # Endurecimiento activo (tras el reinicio del paso 2b):
+  cat /sys/kernel/security/lockdown                 # -> ...[integrity]...
+  cat /sys/module/module/parameters/sig_enforce     # -> Y
+  for k in kernel.kptr_restrict kernel.kexec_load_disabled kernel.yama.ptrace_scope; do sysctl -n $k; done   # -> 2, 1, 1
+
+  # zaque íntegro y servicio verde:
+  sudo zaque verificar                              # -> INTEGRO
+  systemctl status zaque-verificar.service --no-pager
+
+  # Re-sellado por kernel-install (dispara el drop-in tal cual):
+  sudo /etc/kernel/install.d/99-zaque.install add $(uname -r)   # -> "...re-sellada..."
+
+  # Re-sellado por la acción de dnf (el mtime de la base DEBE cambiar):
+  echo "antes:  $(stat -c %Y /var/lib/zaque/linea-base.txt)"
+  sudo dnf reinstall -y libdnf5-plugin-actions >/dev/null 2>&1
+  echo "despues: $(stat -c %Y /var/lib/zaque/linea-base.txt)"   # despues > antes = OK
+
+-------------------------------------------------------------------------------
+ 6. OPERACIÓN DIARIA
+-------------------------------------------------------------------------------
+  sudo zaque verificar        # a mano cuando quieras
+  systemctl is-failed zaque-verificar          # 'failed' = hubo deriva en el último arranque
+  journalctl -u zaque-verificar -b             # qué cambió/apareció/faltó
+  # Si una verificación marca deriva que SABES legítima (un update raro que no
+  # disparó el re-sellado), re-sella:  sudo zaque sellar
+
+-------------------------------------------------------------------------------
+ 7. PENDIENTE / DIFERIDO (decisiones de Juan, no automáticas)
+-------------------------------------------------------------------------------
+  - Fila de zaque en conocimiento/MAPA.md ya añadida.
+  - Secure Boot: DIFERIDO (ola de bypasses viva). Activar = BIOS (físico) + ya está
+    verificado que no rompe el arranque (sin módulos fuera-de-árbol).
+  - Bloque pesado DIFERIDO hasta el primer dato real de TERCEROS en producción:
+    Secure Boot, FDE/LUKS, TPM2 measured-boot, Qubes para el trabajo sensible,
+    contraseña de BIOS.
+  - Límite conocido de zaque: la línea base vive en disco escribible → un root podría
+    re-sellar su propia manipulación. Tapón real (aparte): línea base en medio de
+    solo-lectura o sellada al TPM.
+
+-------------------------------------------------------------------------------
+ RESUMEN DE RUTAS
+-------------------------------------------------------------------------------
+  Binario        /usr/local/bin/zaque           (de target/release/zaque)
+  Línea base     /var/lib/zaque/linea-base.txt  (sudo zaque sellar)
+  sysctl         /etc/sysctl.d/99-xiliux-hardening.conf
+  Servicio       /etc/systemd/system/zaque-verificar.service
+  Hook kernel    /etc/kernel/install.d/99-zaque.install
+  Acción dnf     /etc/dnf/libdnf5-plugins/actions.d/zaque.actions
+  Repo/espejo    /mnt/data/zaque   ·   /mnt/data/espejos/zaque.git
+===============================================================================

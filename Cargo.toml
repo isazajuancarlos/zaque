@@ -1,0 +1,19 @@
+[package]
+name = "zaque"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "MIT"
+authors = ["Juan Carlos Isaza"]
+description = "Detector de integridad de la cadena de arranque: sella y verifica hashes de /boot (kernel, initramfs, grub, BLS, ESP). Detección que compensa Secure Boot apagado. Cero dependencias."
+
+# Estándar de nacimiento (D26): dependencias optimizadas también en debug. zaque no
+# tiene deps hoy, pero la línea queda por si entra un KDF o hashing pesado.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Puerta de buenas prácticas (D26): solo lo que se está dispuesto a BLOQUEAR y que
+# `cargo clippy --fix` limpia a cero.
+[lints.clippy]
+redundant_clone = "deny"
+needless_collect = "deny"

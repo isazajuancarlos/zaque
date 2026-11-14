@@ -1,0 +1,16 @@
+# zaque — re-sellar la línea base tras CADA transacción dnf (libdnf5-plugin-actions).
+# Instalar en: /etc/dnf/libdnf5-plugins/actions.d/zaque.actions
+#
+# Formato (man libdnf5-actions): callback_name:package_filter:direction:options:command
+#   - post_transaction           -> al terminar la transacción
+#   - filtro y dirección VACÍOS  -> ejecutar UNA sola vez por transacción, sin info de paquete
+#   - enabled=host-only          -> no en operaciones sobre un installroot/chroot
+#   - raise_error=0              -> un re-sellado fallido se REGISTRA, no aborta el dnf
+#   - se envuelve en `sh -c … >/dev/null` porque en modo plain el plugin LEE el stdout del
+#     proceso como canal de comunicación; el stdout normal de `zaque sellar` lo confundiría.
+#     (stderr se conserva: un error real de zaque sí queda en el log de dnf.)
+#
+# Por qué es seguro automatizar aquí: una transacción dnf es un cambio AUTENTICADO como
+# root; la manipulación que zaque caza (offline / sin root) no puede dispararla, y un root
+# ya podía re-sellar a mano. Cubre lo que kernel-install no ve (shim, grub2-efi, fwupd-efi).
+post_transaction:::enabled=host-only raise_error=0:/bin/sh -c /usr/local/bin/zaque\ sellar\ >/dev/null
